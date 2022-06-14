@@ -1,6 +1,7 @@
 import aiohttp
 import asyncio
 import click
+import datetime
 import time
 import json
 import sys
@@ -14,6 +15,10 @@ import instawow.plugins
 PASSWORD_SALT = "f2f618c502a975825e5da6f8650ba8fb"
 TOKEN_SALT = "6e8fd9d5da4f1cd0e64ad4d082be477c"
 APP_VERSION = '403'
+
+SUCCESS_SYMBOL = click.style('✓', fg='green')
+FAILURE_SYMBOL = click.style('✗', fg='red')
+WARNING_SYMBOL = click.style('!', fg='blue')
 
 
 class APIError(Exception):
@@ -142,6 +147,7 @@ async def update_tsm_appdata(manager, session):
         for (data_type, data_name), (data, ts) in current_data.items()
     ])
     path.write_text(current_data_raw)
+    return status
 
 
 async def update_config_creds(config_path):
@@ -151,7 +157,7 @@ async def update_config_creds(config_path):
         try:
             await session.login(email, password)
         except APIError as e:
-            print('[ERROR]', str(e))
+            print(FAILURE_SYMBOL, str(e))
             sys.exit(1)
 
     config_path.write_text(json.dumps(
@@ -171,11 +177,30 @@ async def get_config(manager):
     return tsm_config
 
 
+def cli_status_string(status):
+    results = []
+    for realm in status['realms']:
+        results.append([
+            'realm',
+            f'{realm["name"]}-{realm["region"]}',
+            realm['lastModified']
+        ])
+    for region in status['regions']:
+        results.append(['region', region['name'], region['lastModified']])
+
+    return '\n'.join(
+        f'{SUCCESS_SYMBOL} {click.style(t + ":" + n, bold=True)}\n'
+        f'  database timestamp: {datetime.datetime.fromtimestamp(ts)}'
+        for t, n, ts in results
+    )
+
+
 async def update_tsm_appdata_once(manager):
     config = await get_config(manager)
     async with TsmSession() as session:
         await session.login(config['tsm_email'], config['tsm_password'])
-        await update_tsm_appdata(manager, session)
+        status = await update_tsm_appdata(manager, session)
+        print(cli_status_string(status))
 
 
 @click.command()
