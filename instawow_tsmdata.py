@@ -166,7 +166,8 @@ async def update_config_creds(config_path):
 
 
 async def get_config(manager):
-    profile_dir = Path(manager.config.profile_dir)
+    profile_dir = Path(manager.config.plugin_dir / __name__)
+    profile_dir.mkdir(exist_ok=True)
     tsm_config_path = profile_dir / 'tsm.json'
     if not tsm_config_path.exists():
         await update_config_creds(tsm_config_path)
