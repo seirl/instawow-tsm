@@ -1,5 +1,6 @@
 import aiohttp
 import asyncio
+import codecs
 import click
 import datetime
 import json
@@ -19,9 +20,9 @@ from instawow.resolvers import Defn, BaseResolver
 from instawow.common import ChangelogFormat, SourceMetadata
 
 
-PASSWORD_SALT = "f2f618c502a975825e5da6f8650ba8fb"
-TOKEN_SALT = "6e8fd9d5da4f1cd0e64ad4d082be477c"
-APP_VERSION = '403'
+PASSWORD_SALT = codecs.encode("s2s618p502n975825r5qn6s8650on8so", 'rot_13')
+TOKEN_SALT = codecs.encode("6r8sq9q5qn4s1pq0r64nq4q082or477p", 'rot_13')
+APP_VERSION = '412'
 
 SUCCESS_SYMBOL = click.style('✓', fg='green')
 FAILURE_SYMBOL = click.style('✗', fg='red')
