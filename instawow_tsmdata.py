@@ -5,11 +5,16 @@ import datetime
 import time
 import json
 import sys
+from datetime import timezone
+from getpass import getpass
 from hashlib import sha256, sha512
 from pathlib import Path
-from getpass import getpass
 
 import instawow.plugins
+from instawow.results import PkgNonexistent
+from instawow.models import Pkg, PkgOptions
+from instawow.resolvers import Defn, BaseResolver
+from instawow.common import ChangelogFormat, SourceMetadata
 
 
 PASSWORD_SALT = "f2f618c502a975825e5da6f8650ba8fb"
@@ -150,7 +155,15 @@ async def update_tsm_appdata(manager, session):
     return status
 
 
-async def update_config_creds(config_path):
+def get_config_dir(manager):
+    profile_dir = Path(manager.config.plugin_dir / __name__)
+    profile_dir.mkdir(exist_ok=True)
+    tsm_config_path = profile_dir / 'tsm.json'
+    return tsm_config_path
+
+
+async def update_config_creds(manager):
+    tsm_config_path = get_config_dir(manager)
     async with TsmSession() as session:
         email = input('TSM email: ')
         password = getpass('TSM password: ')
@@ -160,21 +173,20 @@ async def update_config_creds(config_path):
             print(FAILURE_SYMBOL, str(e))
             sys.exit(1)
 
-    config_path.write_text(json.dumps(
+    tsm_config_path.write_text(json.dumps(
         {'tsm_email': email, 'tsm_password': password}
     ))
 
 
-async def get_config(manager):
-    profile_dir = Path(manager.config.plugin_dir / __name__)
-    profile_dir.mkdir(exist_ok=True)
-    tsm_config_path = profile_dir / 'tsm.json'
+def get_config(manager):
+    tsm_config_path = get_config_dir(manager)
     if not tsm_config_path.exists():
-        await update_config_creds(tsm_config_path)
+        raise RuntimeError("TSM is not properly configured. "
+                           "Run `tsm configure` first.")
     tsm_config = json.loads(tsm_config_path.read_text())
     if 'tsm_email' not in tsm_config or 'tsm_password' not in tsm_config:
-        await update_config_creds(tsm_config_path)
-    tsm_config = json.loads(tsm_config_path.read_text())
+        raise RuntimeError("TSM is not properly configured. "
+                           "Run `tsm configure` first.")
     return tsm_config
 
 
@@ -197,19 +209,74 @@ def cli_status_string(status):
 
 
 async def update_tsm_appdata_once(manager):
-    config = await get_config(manager)
+    config = get_config(manager)
     async with TsmSession() as session:
         await session.login(config['tsm_email'], config['tsm_password'])
         status = await update_tsm_appdata(manager, session)
         print(cli_status_string(status))
 
 
-@click.command()
+class TSMResolver(BaseResolver):
+    metadata = SourceMetadata(
+        id='tsm',
+        name='TradeSkillMaster',
+        strategies=frozenset(),
+        changelog_format=ChangelogFormat.raw,
+        addon_toc_key=None,
+    )
+    BASE_URL = 'https://www.tradeskillmaster.com/download/{addon}.zip'
+
+    async def get_addons(self):
+        config = get_config(self._manager)
+        async with TsmSession() as session:
+            await session.login(config['tsm_email'], config['tsm_password'])
+            status = await session.status()
+            addons = {v['name']: v for v in status['addons']}
+            return addons
+
+    async def resolve_one(self, defn: Defn, metadata: None) -> Pkg:
+        addons = await self.get_addons()
+        addons = {k.lower(): v for k, v in addons.items()}
+        if defn.alias not in addons:
+            raise PkgNonexistent
+        addon = addons[defn.alias]
+        return Pkg(
+            source=self.metadata.id,
+            id=defn.alias,
+            slug=defn.alias,
+            name=addon['name'],
+            description=addon['name'],
+            url='https://www.tradeskillmaster.com/',
+            download_url=self.BASE_URL.format(addon=addon['name']),
+            date_published=datetime.datetime.now(timezone.utc),
+            version=addon['version_str'],
+            options=PkgOptions.from_strategy_values(defn.strategies),
+            changelog_url='data:,',
+        )
+
+
+@click.group()
+def tsm():
+    pass
+
+
+@tsm.command()
 @click.pass_obj
-def tsmupdate(mw):
+def configure(mw):
+    asyncio.run(update_config_creds(mw.manager))
+
+
+@tsm.command()
+@click.pass_obj
+def update(mw):
     asyncio.run(update_tsm_appdata_once(mw.manager))
 
 
 @instawow.plugins.hookimpl
 def instawow_add_commands():
-    return (tsmupdate,)
+    return (tsm,)
+
+
+@instawow.plugins.hookimpl
+def instawow_add_resolvers():
+    return (TSMResolver,)
