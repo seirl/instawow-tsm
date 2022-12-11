@@ -2,9 +2,11 @@ import aiohttp
 import asyncio
 import click
 import datetime
-import time
 import json
 import sys
+import time
+import gzip
+from io import BytesIO
 from datetime import timezone
 from getpass import getpass
 from hashlib import sha256, sha512
@@ -85,7 +87,13 @@ class TsmSession:
 
     async def auctiondb(self, download_url):
         resp = await self.aiohttp_session.get(download_url)
-        return (await resp.text())
+        raw_data = await resp.read()
+        if raw_data[:2] == b'\x1f\x8b':
+            data = gzip.GzipFile(fileobj=BytesIO(raw_data)).read().decode()
+        else:
+            data = raw_data.decode()
+        return data
+        # return (await resp.text())
         # resp = await self._req(['auctiondb', data_type, str(id)])
         # return (await resp.json())['data']
 
@@ -115,21 +123,38 @@ async def update_tsm_appdata(manager, session):
     status = await session.status()
     ts = int(time.time())
 
+    realm_pricing_sources = {
+        'AUCTIONDB_REALM_DATA': 'data',
+        'AUCTIONDB_REALM_HISTORICAL': 'historical',
+        'AUCTIONDB_REALM_SCAN_STAT': 'scanStat',
+    }
+
     # Add realm-specific market data
     for realm in status['realms']:
-        data = await session.auctiondb(realm['downloadUrl'])
-        current_data[('AUCTIONDB_MARKET_DATA', realm['name'])] = (
-            data,
-            realm['lastModified'],
-        )
+        for pricing_source, pricingstringkey in realm_pricing_sources.items():
+            url = realm['pricingStrings'][pricingstringkey]['url']
+            data = await session.auctiondb(url)
+            current_data[(pricing_source, realm['name'])] = (
+                data,
+                realm['lastModified'],
+            )
+
+    region_pricing_sources = {
+        'AUCTIONDB_REGION_COMMODITY': 'commodity',
+        'AUCTIONDB_REGION_HISTORICAL': 'historical',
+        'AUCTIONDB_REGION_STAT': 'stat',
+        'AUCTIONDB_REGION_SALE': 'sale',
+    }
 
     # Add regional market data
     for region in status['regions']:
-        data = await session.auctiondb(region['downloadUrl'])
-        current_data[('AUCTIONDB_MARKET_DATA', region['name'])] = (
-            data,
-            region['lastModified'],
-        )
+        for pricing_source, pricingstringkey in region_pricing_sources.items():
+            url = region['pricingStrings'][pricingstringkey]['url']
+            data = await session.auctiondb(url)
+            current_data[(pricing_source, region['name'])] = (
+                data,
+                region['lastModified'],
+            )
 
     # Add APP_INFO key
     addon_message = "{{id={},msg=\"{}\"}}".format(
