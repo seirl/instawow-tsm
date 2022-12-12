@@ -1,6 +1,6 @@
 # instawow-tsm
 
-[Instawow](https://github.com/layday) plugin for
+[Instawow](https://github.com/layday/instawow) plugin for
 [TradeSkillMaster](https://www.tradeskillmaster.com/). Supports addon
 downloading and fetching auction pricing data, all in CLI.
 

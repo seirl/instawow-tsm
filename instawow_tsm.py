@@ -1,12 +1,13 @@
 import aiohttp
 import asyncio
-import codecs
 import click
+import codecs
 import datetime
+import gzip
 import json
 import sys
+import textwrap
 import time
-import gzip
 from io import BytesIO
 from datetime import timezone
 from getpass import getpass
@@ -18,6 +19,7 @@ from instawow.results import PkgNonexistent
 from instawow.models import Pkg, PkgOptions
 from instawow.resolvers import Defn, BaseResolver
 from instawow.common import ChangelogFormat, SourceMetadata
+from instawow.config import logger
 
 
 PASSWORD_SALT = codecs.encode("s2s618p502n975825r5qn6s8650on8so", 'rot_13')
@@ -67,7 +69,10 @@ class TsmSession:
             ),
             params=params,
         )
-        return r
+        res_data = await r.json()
+        if not res_data['success']:
+            raise APIError(res_data['error'])
+        return res_data
 
     async def login(self, email, password):
         email_hash = sha256(email.lower().encode()).hexdigest()
@@ -75,16 +80,12 @@ class TsmSession:
         pass_hash = sha512(
             '{}{}'.format(initial_pass_hash, PASSWORD_SALT).encode()
         ).hexdigest()
-        resp = await self._req(['login', email_hash, pass_hash])
-        login_data = await resp.json()
-        if not login_data['success']:
-            raise APIError(login_data['error'])
+        login_data = await self._req(['login', email_hash, pass_hash])
         self.endpoint_subdomains.update(login_data["endpointSubdomains"])
         self.session = login_data['session']
 
     async def status(self):
-        resp = await self._req(['status'])
-        return (await resp.json())
+        return await self._req(['status'])
 
     async def auctiondb(self, download_url):
         resp = await self.aiohttp_session.get(download_url)
@@ -242,6 +243,20 @@ async def update_tsm_appdata_once(manager):
         print(cli_status_string(status))
 
 
+async def update_tsm_appdata_loop(manager, delay=600):
+    config = get_config(manager)
+    async with TsmSession() as session:
+        await session.login(config['tsm_email'], config['tsm_password'])
+        logger.info("Refreshing auction data every {} seconds...", delay)
+        while True:
+            status = await update_tsm_appdata(manager, session)
+            logger.info(
+                "Refreshed:\n{}",
+                textwrap.indent(cli_status_string(status), '  ')
+            )
+            await asyncio.sleep(delay)
+
+
 class TSMResolver(BaseResolver):
     metadata = SourceMetadata(
         id='tsm',
@@ -296,6 +311,14 @@ def configure(mw):
 @click.pass_obj
 def update(mw):
     asyncio.run(update_tsm_appdata_once(mw.manager))
+
+
+@tsm.command()
+@click.option('-d', '--delay', default=600, type=int,
+              help="Refresh delay (seconds)")
+@click.pass_obj
+def run(mw, delay):
+    asyncio.run(update_tsm_appdata_loop(mw.manager, delay=delay))
 
 
 @instawow.plugins.hookimpl
