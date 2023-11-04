@@ -13,18 +13,18 @@ from datetime import timezone
 from getpass import getpass
 from hashlib import sha256, sha512
 from pathlib import Path
+from loguru import logger
 
 import instawow.plugins
 from instawow.results import PkgNonexistent
-from instawow.models import Pkg, PkgOptions
-from instawow.resolvers import Defn, BaseResolver
-from instawow.common import ChangelogFormat, SourceMetadata
-from instawow.config import logger
+from instawow.pkg_models import Pkg, PkgOptions
+from instawow.resolvers import BaseResolver
+from instawow.common import Defn, ChangelogFormat, SourceMetadata
 
 
 PASSWORD_SALT = codecs.encode("s2s618p502n975825r5qn6s8650on8so", 'rot_13')
 TOKEN_SALT = codecs.encode("6r8sq9q5qn4s1pq0r64nq4q082or477p", 'rot_13')
-APP_VERSION = '412'
+APP_VERSION = '413'
 
 SUCCESS_SYMBOL = click.style('✓', fg='green')
 FAILURE_SYMBOL = click.style('✗', fg='red')
@@ -100,6 +100,20 @@ class TsmSession:
         # return (await resp.json())['data']
 
 
+REALM_PRICING_SOURCES = {
+    'AUCTIONDB_REALM_DATA': 'data',
+    'AUCTIONDB_REALM_HISTORICAL': 'historical',
+    'AUCTIONDB_REALM_SCAN_STAT': 'scanStat',
+}
+
+REGION_PRICING_SOURCES = {
+    'AUCTIONDB_REGION_COMMODITY': 'commodity',
+    'AUCTIONDB_REGION_HISTORICAL': 'historical',
+    'AUCTIONDB_REGION_STAT': 'stat',
+    'AUCTIONDB_REGION_SALE': 'sale',
+}
+
+
 async def update_tsm_appdata(manager, session):
     path = (
         Path(manager.config.addon_dir)
@@ -125,37 +139,24 @@ async def update_tsm_appdata(manager, session):
     status = await session.status()
     ts = int(time.time())
 
-    realm_pricing_sources = {
-        'AUCTIONDB_REALM_DATA': 'data',
-        'AUCTIONDB_REALM_HISTORICAL': 'historical',
-        'AUCTIONDB_REALM_SCAN_STAT': 'scanStat',
-    }
-
     # Add realm-specific market data
     for realm in status['realms']:
-        for pricing_source, pricingstringkey in realm_pricing_sources.items():
+        for pricing_source, pricingstringkey in REALM_PRICING_SOURCES.items():
             url = realm['pricingStrings'][pricingstringkey]['url']
             data = await session.auctiondb(url)
             current_data[(pricing_source, realm['name'])] = (
                 data,
-                realm['lastModified'],
+                realm['pricingStrings'][pricingstringkey]['lastModified'],
             )
-
-    region_pricing_sources = {
-        'AUCTIONDB_REGION_COMMODITY': 'commodity',
-        'AUCTIONDB_REGION_HISTORICAL': 'historical',
-        'AUCTIONDB_REGION_STAT': 'stat',
-        'AUCTIONDB_REGION_SALE': 'sale',
-    }
 
     # Add regional market data
     for region in status['regions']:
-        for pricing_source, pricingstringkey in region_pricing_sources.items():
+        for pricing_source, pricingstringkey in REGION_PRICING_SOURCES.items():
             url = region['pricingStrings'][pricingstringkey]['url']
             data = await session.auctiondb(url)
             current_data[(pricing_source, region['name'])] = (
                 data,
-                region['lastModified'],
+                region['pricingStrings'][pricingstringkey]['lastModified'],
             )
 
     # Add APP_INFO key
@@ -182,15 +183,15 @@ async def update_tsm_appdata(manager, session):
     return status
 
 
-def get_config_dir(manager):
-    profile_dir = Path(manager.config.plugin_dir / __name__)
+def get_config_dir(manager_ctx):
+    profile_dir = Path(manager_ctx.config.plugins_dir / __name__)
     profile_dir.mkdir(exist_ok=True)
     tsm_config_path = profile_dir / 'tsm.json'
     return tsm_config_path
 
 
-async def update_config_creds(manager):
-    tsm_config_path = get_config_dir(manager)
+async def update_config_creds(manager_ctx):
+    tsm_config_path = get_config_dir(manager_ctx)
     async with TsmSession() as session:
         email = input('TSM email: ')
         password = getpass('TSM password: ')
@@ -205,8 +206,8 @@ async def update_config_creds(manager):
     ))
 
 
-def get_config(manager):
-    tsm_config_path = get_config_dir(manager)
+def get_config(manager_ctx):
+    tsm_config_path = get_config_dir(manager_ctx)
     if not tsm_config_path.exists():
         raise RuntimeError("TSM is not properly configured. "
                            "Run `tsm configure` first.")
@@ -223,15 +224,30 @@ def cli_status_string(status):
         results.append([
             'realm',
             f'{realm["name"]}-{realm["region"]}',
-            realm['lastModified']
+            '\n'.join(
+                f"  "
+                f"{datetime.datetime.fromtimestamp(realm['pricingStrings'][pricingstringkey]['lastModified'])} "
+                f"[{pricing_source.lower()}] "
+                for pricing_source, pricingstringkey
+                in REALM_PRICING_SOURCES.items()
+            )
         ])
     for region in status['regions']:
-        results.append(['region', region['name'], region['lastModified']])
+        results.append([
+            'region',
+            region['name'],
+            '\n'.join(
+                f"  "
+                f"{datetime.datetime.fromtimestamp(region['pricingStrings'][pricingstringkey]['lastModified'])} "
+                f"[{pricing_source.lower()}] "
+                for pricing_source, pricingstringkey
+                in REGION_PRICING_SOURCES.items()
+            )
+        ])
 
     return '\n'.join(
-        f'{SUCCESS_SYMBOL} {click.style(t + ":" + n, bold=True)}\n'
-        f'  database timestamp: {datetime.datetime.fromtimestamp(ts)}'
-        for t, n, ts in results
+        f'{SUCCESS_SYMBOL} {click.style(t + ":" + n, bold=True)}\n{l}'
+        for t, n, l in results
     )
 
 
@@ -262,13 +278,14 @@ class TSMResolver(BaseResolver):
         id='tsm',
         name='TradeSkillMaster',
         strategies=frozenset(),
-        changelog_format=ChangelogFormat.raw,
+        changelog_format=ChangelogFormat.Raw,
         addon_toc_key=None,
     )
+    requires_access_token = None
     BASE_URL = 'https://www.tradeskillmaster.com/download/{addon}.zip'
 
     async def get_addons(self):
-        config = get_config(self._manager)
+        config = get_config(self._manager_ctx)
         async with TsmSession() as session:
             await session.login(config['tsm_email'], config['tsm_password'])
             status = await session.status()
@@ -304,13 +321,13 @@ def tsm():
 @tsm.command()
 @click.pass_obj
 def configure(mw):
-    asyncio.run(update_config_creds(mw.manager))
+    asyncio.run(update_config_creds(mw.manager.ctx))
 
 
 @tsm.command()
 @click.pass_obj
 def update(mw):
-    asyncio.run(update_tsm_appdata_once(mw.manager))
+    asyncio.run(update_tsm_appdata_once(mw.manager.ctx))
 
 
 @tsm.command()
