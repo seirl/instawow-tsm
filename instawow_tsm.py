@@ -186,7 +186,7 @@ async def update_tsm_appdata(manager, session):
 def get_config_dir(manager_ctx):
     profile_dir = Path(manager_ctx.config.plugins_dir / __name__)
     profile_dir.mkdir(exist_ok=True)
-    tsm_config_path = profile_dir / 'tsm.json'
+    tsm_config_path = profile_dir / 'credentials.json'
     return tsm_config_path
 
 
@@ -259,13 +259,13 @@ async def update_tsm_appdata_once(manager):
         print(cli_status_string(status))
 
 
-async def update_tsm_appdata_loop(manager, delay=600):
-    config = get_config(manager)
+async def update_tsm_appdata_loop(manager_ctx, delay=600):
+    config = get_config(manager_ctx)
     async with TsmSession() as session:
         await session.login(config['tsm_email'], config['tsm_password'])
         logger.info("Refreshing auction data every {} seconds...", delay)
         while True:
-            status = await update_tsm_appdata(manager, session)
+            status = await update_tsm_appdata(manager_ctx, session)
             logger.info(
                 "Refreshed:\n{}",
                 textwrap.indent(cli_status_string(status), '  ')
@@ -335,7 +335,7 @@ def update(mw):
               help="Refresh delay (seconds)")
 @click.pass_obj
 def run(mw, delay):
-    asyncio.run(update_tsm_appdata_loop(mw.manager, delay=delay))
+    asyncio.run(update_tsm_appdata_loop(mw.manager.ctx, delay=delay))
 
 
 @instawow.plugins.hookimpl
