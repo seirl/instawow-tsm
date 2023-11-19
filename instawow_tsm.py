@@ -261,16 +261,16 @@ async def update_tsm_appdata_once(manager):
 
 async def update_tsm_appdata_loop(manager_ctx, delay=600):
     config = get_config(manager_ctx)
-    async with TsmSession() as session:
-        await session.login(config['tsm_email'], config['tsm_password'])
-        logger.info("Refreshing auction data every {} seconds...", delay)
-        while True:
+    while True:
+        async with TsmSession() as session:
+            await session.login(config['tsm_email'], config['tsm_password'])
+            logger.info("Refreshing auction data every {} seconds...", delay)
             status = await update_tsm_appdata(manager_ctx, session)
             logger.info(
                 "Refreshed:\n{}",
                 textwrap.indent(cli_status_string(status), '  ')
             )
-            await asyncio.sleep(delay)
+        await asyncio.sleep(delay)
 
 
 class TSMResolver(BaseResolver):
