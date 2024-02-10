@@ -127,7 +127,12 @@ async def update_tsm_appdata(manager, session):
     # Each line is of the format
     # `{data} --<{data_type},{realm},{time}>`
     for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
         parts = line.split('--')
+        if len(parts) != 2:
+            raise RuntimeError("Cannot parse the existing AppData.lua")
         data = parts[0].rstrip(' ')
         comment_data = parts[1].lstrip('<').rstrip('>')
         comment_parts = comment_data.split(',')
