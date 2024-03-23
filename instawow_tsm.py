@@ -24,7 +24,7 @@ from instawow.common import Defn, ChangelogFormat, SourceMetadata
 
 PASSWORD_SALT = codecs.encode("s2s618p502n975825r5qn6s8650on8so", 'rot_13')
 TOKEN_SALT = codecs.encode("6r8sq9q5qn4s1pq0r64nq4q082or477p", 'rot_13')
-APP_VERSION = '413'
+APP_VERSION = '41300'
 
 SUCCESS_SYMBOL = click.style('✓', fg='green')
 FAILURE_SYMBOL = click.style('✗', fg='red')
