@@ -16,10 +16,9 @@ from pathlib import Path
 from loguru import logger
 
 import instawow.plugins
+from instawow.definitions import Defn, ChangelogFormat, SourceMetadata
 from instawow.results import PkgNonexistent
-from instawow.pkg_models import Pkg, PkgOptions
-from instawow.resolvers import BaseResolver
-from instawow.common import Defn, ChangelogFormat, SourceMetadata
+from instawow.resolvers import BaseResolver, PkgCandidate
 
 
 PASSWORD_SALT = codecs.encode("s2s618p502n975825r5qn6s8650on8so", 'rot_13')
@@ -297,14 +296,13 @@ class TSMResolver(BaseResolver):
             addons = {v['name']: v for v in status['addons']}
             return addons
 
-    async def resolve_one(self, defn: Defn, metadata: None) -> Pkg:
+    async def _resolve_one(self, defn: Defn, metadata: None) -> PkgCandidate:
         addons = await self.get_addons()
         addons = {k.lower(): v for k, v in addons.items()}
         if defn.alias not in addons:
             raise PkgNonexistent
         addon = addons[defn.alias]
-        return Pkg(
-            source=self.metadata.id,
+        return PkgCandidate(
             id=defn.alias,
             slug=defn.alias,
             name=addon['name'],
@@ -313,7 +311,6 @@ class TSMResolver(BaseResolver):
             download_url=self.BASE_URL.format(addon=addon['name']),
             date_published=datetime.datetime.now(timezone.utc),
             version=addon['version_str'],
-            options=PkgOptions.from_strategy_values(defn.strategies),
             changelog_url='data:,',
         )
 
