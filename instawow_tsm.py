@@ -41,7 +41,7 @@ class TsmSession:
             'login': 'app-server',
             'log': 'app-server',
         }
-        self.aiohttp_session = aiohttp.ClientSession()
+        self.aiohttp_session = aiohttp.ClientSession(raise_for_status=True)
 
     async def __aenter__(self):
         await self.aiohttp_session.__aenter__()
@@ -125,13 +125,20 @@ async def update_tsm_appdata(manager, session):
     current_data = {}
     # Each line is of the format
     # `{data} --<{data_type},{realm},{time}>`
-    for line in path.read_text().splitlines():
+    for lineno, line in enumerate(path.read_text().splitlines(), start=1):
         line = line.strip()
         if not line:
             continue
         parts = line.split('--')
         if len(parts) != 2:
-            raise RuntimeError("Cannot parse the existing AppData.lua")
+            raise RuntimeError(
+                "Cannot parse metadata at {}:{}: '{}'"
+                .format(
+                    path,
+                    lineno,
+                    line if len(line) < 80 else line[:80] + "...",
+                )
+            )
         data = parts[0].rstrip(' ')
         comment_data = parts[1].lstrip('<').rstrip('>')
         comment_parts = comment_data.split(',')
