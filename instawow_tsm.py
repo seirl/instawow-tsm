@@ -3,6 +3,7 @@ import asyncio
 import click
 import codecs
 import datetime
+import functools
 import gzip
 import json
 import sys
@@ -19,6 +20,7 @@ import instawow.plugins
 from instawow.definitions import Defn, ChangelogFormat, SourceMetadata
 from instawow.results import PkgNonexistent
 from instawow.resolvers import BaseResolver, PkgCandidate
+from instawow.cli import ConfigBoundCtxProxy
 
 
 PASSWORD_SALT = codecs.encode("s2s618p502n975825r5qn6s8650on8so", 'rot_13')
@@ -113,9 +115,9 @@ REGION_PRICING_SOURCES = {
 }
 
 
-async def update_tsm_appdata(manager, session):
+async def update_tsm_appdata(profile_config, session):
     path = (
-        Path(manager.config.addon_dir)
+        Path(profile_config.addon_dir)
         / 'TradeSkillMaster_AppHelper'
         / 'AppData.lua'
     )
@@ -194,15 +196,15 @@ async def update_tsm_appdata(manager, session):
     return status
 
 
-def get_config_dir(manager_ctx):
-    profile_dir = Path(manager_ctx.config.plugins_dir / __name__)
-    profile_dir.mkdir(exist_ok=True)
+def get_tsm_config_dir(profile_config):
+    profile_dir = profile_config.global_config.plugins_config_dir / __name__
+    profile_dir.mkdir(exist_ok=True, parents=True)
     tsm_config_path = profile_dir / 'credentials.json'
     return tsm_config_path
 
 
-async def update_config_creds(manager_ctx):
-    tsm_config_path = get_config_dir(manager_ctx)
+async def update_config_creds(profile_config):
+    tsm_config_path = get_tsm_config_dir(profile_config)
     async with TsmSession() as session:
         email = input('TSM email: ')
         password = getpass('TSM password: ')
@@ -217,8 +219,8 @@ async def update_config_creds(manager_ctx):
     ))
 
 
-def get_config(manager_ctx):
-    tsm_config_path = get_config_dir(manager_ctx)
+def get_tsm_config(profile_config):
+    tsm_config_path = get_tsm_config_dir(profile_config)
     if not tsm_config_path.exists():
         raise RuntimeError("TSM is not properly configured. "
                            "Run `tsm configure` first.")
@@ -232,28 +234,32 @@ def get_config(manager_ctx):
 def cli_status_string(status):
     results = []
     for realm in status['realms']:
+        realm_info = []
+        for pricing_source, pricingstringkey in REALM_PRICING_SOURCES.items():
+            realm_info.append("  {} [{}]".format(
+                datetime.datetime.fromtimestamp(
+                    realm['pricingStrings'][pricingstringkey]['lastModified']
+                ),
+                pricing_source.lower(),
+            ))
         results.append([
             'realm',
             f'{realm["name"]}-{realm["region"]}',
-            '\n'.join(
-                f"  "
-                f"{datetime.datetime.fromtimestamp(realm['pricingStrings'][pricingstringkey]['lastModified'])} "
-                f"[{pricing_source.lower()}] "
-                for pricing_source, pricingstringkey
-                in REALM_PRICING_SOURCES.items()
-            )
+            '\n'.join(realm_info)
         ])
     for region in status['regions']:
+        region_info = []
+        for pricing_source, pricingstringkey in REGION_PRICING_SOURCES.items():
+            region_info.append("  {} [{}]".format(
+                datetime.datetime.fromtimestamp(
+                    region['pricingStrings'][pricingstringkey]['lastModified']
+                ),
+                pricing_source.lower(),
+            ))
         results.append([
             'region',
             region['name'],
-            '\n'.join(
-                f"  "
-                f"{datetime.datetime.fromtimestamp(region['pricingStrings'][pricingstringkey]['lastModified'])} "
-                f"[{pricing_source.lower()}] "
-                for pricing_source, pricingstringkey
-                in REGION_PRICING_SOURCES.items()
-            )
+            '\n'.join(region_info)
         ])
 
     return '\n'.join(
@@ -262,21 +268,21 @@ def cli_status_string(status):
     )
 
 
-async def update_tsm_appdata_once(manager):
-    config = get_config(manager)
+async def update_tsm_appdata_once(profile_config):
+    config = get_tsm_config(profile_config)
     async with TsmSession() as session:
         await session.login(config['tsm_email'], config['tsm_password'])
-        status = await update_tsm_appdata(manager, session)
+        status = await update_tsm_appdata(profile_config, session)
         print(cli_status_string(status))
 
 
-async def update_tsm_appdata_loop(manager_ctx, delay=600):
-    config = get_config(manager_ctx)
+async def update_tsm_appdata_loop(profile_config, delay=600):
+    config = get_tsm_config(profile_config)
     while True:
         async with TsmSession() as session:
             await session.login(config['tsm_email'], config['tsm_password'])
             logger.info("Refreshing auction data every {} seconds...", delay)
-            status = await update_tsm_appdata(manager_ctx, session)
+            status = await update_tsm_appdata(profile_config, session)
             logger.info(
                 "Refreshed:\n{}",
                 textwrap.indent(cli_status_string(status), '  ')
@@ -295,10 +301,16 @@ class TSMResolver(BaseResolver):
     requires_access_token = None
     BASE_URL = 'https://www.tradeskillmaster.com/download/{addon}.zip'
 
+    @functools.cached_property
+    def tsm_config(self):
+        return get_tsm_config(self._config)
+
     async def get_addons(self):
-        config = get_config(self._manager_ctx)
         async with TsmSession() as session:
-            await session.login(config['tsm_email'], config['tsm_password'])
+            await session.login(
+                self.tsm_config['tsm_email'],
+                self.tsm_config['tsm_password']
+            )
             status = await session.status()
             addons = {v['name']: v for v in status['addons']}
             return addons
@@ -329,22 +341,22 @@ def tsm():
 
 @tsm.command()
 @click.pass_obj
-def configure(mw):
-    asyncio.run(update_config_creds(mw.manager.ctx))
+def configure(config_ctx: ConfigBoundCtxProxy):
+    asyncio.run(update_config_creds(config_ctx.config))
 
 
 @tsm.command()
 @click.pass_obj
-def update(mw):
-    asyncio.run(update_tsm_appdata_once(mw.manager.ctx))
+def update(config_ctx: ConfigBoundCtxProxy):
+    asyncio.run(update_tsm_appdata_once(config_ctx.config))
 
 
 @tsm.command()
 @click.option('-d', '--delay', default=600, type=int,
               help="Refresh delay (seconds)")
 @click.pass_obj
-def run(mw, delay):
-    asyncio.run(update_tsm_appdata_loop(mw.manager.ctx, delay=delay))
+def run(config_ctx: ConfigBoundCtxProxy, delay):
+    asyncio.run(update_tsm_appdata_loop(config_ctx.config, delay=delay))
 
 
 @instawow.plugins.hookimpl
