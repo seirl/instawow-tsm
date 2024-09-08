@@ -5,6 +5,7 @@ import codecs
 import datetime
 import functools
 import gzip
+import io
 import json
 import sys
 import textwrap
@@ -24,12 +25,14 @@ from instawow.cli import ConfigBoundCtxProxy
 
 
 PASSWORD_SALT = codecs.encode("s2s618p502n975825r5qn6s8650on8so", 'rot_13')
-TOKEN_SALT = codecs.encode("6r8sq9q5qn4s1pq0r64nq4q082or477p", 'rot_13')
-APP_VERSION = '41300'
+TOKEN_SALT = codecs.encode("3SO1PP5RQP5O43S21PO8NPP23O42O703", 'rot13')
+APP_VERSION = '41401'
 
 SUCCESS_SYMBOL = click.style('✓', fg='green')
 FAILURE_SYMBOL = click.style('✗', fg='red')
 WARNING_SYMBOL = click.style('!', fg='blue')
+
+OPENID_URL = 'https://id.tradeskillmaster.com/realms/app/protocol/openid-connect/token'
 
 
 class APIError(Exception):
@@ -42,6 +45,8 @@ class TsmSession:
         self.endpoint_subdomains = {
             'login': 'app-server',
             'log': 'app-server',
+            'auth': 'app-server',
+            'realms2': 'app-server',
         }
         self.aiohttp_session = aiohttp.ClientSession(raise_for_status=True)
 
@@ -52,7 +57,7 @@ class TsmSession:
     async def __aexit__(self, exc_type, exc_value, tb):
         await self.aiohttp_session.__aexit__(exc_type, exc_value, tb)
 
-    async def _req(self, endpoint):
+    async def _req(self, endpoint, data=None):
         params = {
             'session': self.session,
             'version': APP_VERSION,
@@ -60,28 +65,58 @@ class TsmSession:
             'channel': 'release',
             'tsm_version': '',
         }
+        method = 'get'
         params['token'] = sha256('{}:{}:{}'.format(
             params['version'], params['time'], TOKEN_SALT
         ).encode()).hexdigest()
-        r = await self.aiohttp_session.get(
+
+        headers = {}
+        if data:
+            method = 'post'
+            data = json.dumps(data)
+            data = gzip.compress(data.encode())
+            headers['Content-Encoding'] = 'gzip'
+
+        r = await self.aiohttp_session.request(
+            method,
             'http://{}.tradeskillmaster.com/v2/{}'.format(
                 self.endpoint_subdomains[endpoint[0]],
                 '/'.join(endpoint)
             ),
             params=params,
+            headers=headers,
+            data=data,
         )
         res_data = await r.json()
         if not res_data['success']:
             raise APIError(res_data['error'])
         return res_data
 
+    async def token(self, email, password):
+        payload = {
+         "username": email,
+         "password": password,
+         "client_id": "legacy-desktop-app",
+         "grant_type": ["password"],
+         "code": "",
+         "redirect_uri": "",
+         "scope": "openid"
+        }
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        resp = await self.aiohttp_session.post(
+            OPENID_URL,
+            data=payload,
+            headers=headers,
+            verify_ssl=None,
+            raise_for_status=True,
+        )
+        return (await resp.json())
+
     async def login(self, email, password):
-        email_hash = sha256(email.lower().encode()).hexdigest()
-        initial_pass_hash = sha512(password.encode()).hexdigest()
-        pass_hash = sha512(
-            '{}{}'.format(initial_pass_hash, PASSWORD_SALT).encode()
-        ).hexdigest()
-        login_data = await self._req(['login', email_hash, pass_hash])
+        t = await self.token(email, password)
+        login_data = await self._req(
+            ['auth'], data={'token': t['access_token']}
+        )
         self.endpoint_subdomains.update(login_data["endpointSubdomains"])
         self.session = login_data['session']
 
@@ -96,23 +131,22 @@ class TsmSession:
         else:
             data = raw_data.decode()
         return data
-        # return (await resp.text())
-        # resp = await self._req(['auctiondb', data_type, str(id)])
-        # return (await resp.json())['data']
 
 
-REALM_PRICING_SOURCES = {
-    'AUCTIONDB_REALM_DATA': 'data',
-    'AUCTIONDB_REALM_HISTORICAL': 'historical',
-    'AUCTIONDB_REALM_SCAN_STAT': 'scanStat',
-}
+REALM_PRICING_SOURCES = [
+    'AUCTIONDB_NON_COMMODITY_DATA',
+    'AUCTIONDB_NON_COMMODITY_SCAN_STAT',
+    'AUCTIONDB_NON_COMMODITY_HISTORICAL',
+]
 
-REGION_PRICING_SOURCES = {
-    'AUCTIONDB_REGION_COMMODITY': 'commodity',
-    'AUCTIONDB_REGION_HISTORICAL': 'historical',
-    'AUCTIONDB_REGION_STAT': 'stat',
-    'AUCTIONDB_REGION_SALE': 'sale',
-}
+REGION_PRICING_SOURCES = [
+    'AUCTIONDB_COMMODITY_DATA',
+    'AUCTIONDB_COMMODITY_SCAN_STAT',
+    'AUCTIONDB_COMMODITY_HISTORICAL',
+    'AUCTIONDB_REGION_STAT',
+    'AUCTIONDB_REGION_HISTORICAL',
+    'AUCTIONDB_REGION_SALE',
+]
 
 
 async def update_tsm_appdata(profile_config, session):
@@ -154,22 +188,22 @@ async def update_tsm_appdata(profile_config, session):
 
     # Add realm-specific market data
     for realm in status['realms']:
-        for pricing_source, pricingstringkey in REALM_PRICING_SOURCES.items():
-            url = realm['pricingStrings'][pricingstringkey]['url']
+        for pricing_source in REALM_PRICING_SOURCES:
+            url = realm['appDataStrings'][pricing_source]['url']
             data = await session.auctiondb(url)
             current_data[(pricing_source, realm['name'])] = (
                 data,
-                realm['pricingStrings'][pricingstringkey]['lastModified'],
+                realm['appDataStrings'][pricing_source]['lastModified'],
             )
 
     # Add regional market data
     for region in status['regions']:
-        for pricing_source, pricingstringkey in REGION_PRICING_SOURCES.items():
-            url = region['pricingStrings'][pricingstringkey]['url']
+        for pricing_source in REGION_PRICING_SOURCES:
+            url = region['appDataStrings'][pricing_source]['url']
             data = await session.auctiondb(url)
             current_data[(pricing_source, region['name'])] = (
                 data,
-                region['pricingStrings'][pricingstringkey]['lastModified'],
+                region['appDataStrings'][pricing_source]['lastModified'],
             )
 
     # Add APP_INFO key
@@ -235,10 +269,10 @@ def cli_status_string(status):
     results = []
     for realm in status['realms']:
         realm_info = []
-        for pricing_source, pricingstringkey in REALM_PRICING_SOURCES.items():
+        for pricing_source in REALM_PRICING_SOURCES:
             realm_info.append("  {} [{}]".format(
                 datetime.datetime.fromtimestamp(
-                    realm['pricingStrings'][pricingstringkey]['lastModified']
+                    realm['appDataStrings'][pricing_source]['lastModified']
                 ),
                 pricing_source.lower(),
             ))
@@ -249,10 +283,10 @@ def cli_status_string(status):
         ])
     for region in status['regions']:
         region_info = []
-        for pricing_source, pricingstringkey in REGION_PRICING_SOURCES.items():
+        for pricing_source in REGION_PRICING_SOURCES:
             region_info.append("  {} [{}]".format(
                 datetime.datetime.fromtimestamp(
-                    region['pricingStrings'][pricingstringkey]['lastModified']
+                    region['appDataStrings'][pricing_source]['lastModified']
                 ),
                 pricing_source.lower(),
             ))
