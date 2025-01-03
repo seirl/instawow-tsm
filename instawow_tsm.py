@@ -5,15 +5,15 @@ import codecs
 import datetime
 import functools
 import gzip
-import io
 import json
 import sys
 import textwrap
+import urllib.parse
 import time
 from io import BytesIO
 from datetime import timezone
 from getpass import getpass
-from hashlib import sha256, sha512
+from hashlib import sha256
 from pathlib import Path
 from loguru import logger
 
@@ -32,7 +32,7 @@ SUCCESS_SYMBOL = click.style('✓', fg='green')
 FAILURE_SYMBOL = click.style('✗', fg='red')
 WARNING_SYMBOL = click.style('!', fg='blue')
 
-OPENID_URL = 'https://id.tradeskillmaster.com/realms/app/protocol/openid-connect/token'
+OPENID_URL = 'https://id.tradeskillmaster.com/realms/app/protocol/openid-connect/token'  # noqa
 
 
 class APIError(Exception):
@@ -57,7 +57,7 @@ class TsmSession:
     async def __aexit__(self, exc_type, exc_value, tb):
         await self.aiohttp_session.__aexit__(exc_type, exc_value, tb)
 
-    async def _req(self, endpoint, data=None):
+    def _get_url(self, endpoint):
         params = {
             'session': self.session,
             'version': APP_VERSION,
@@ -65,12 +65,19 @@ class TsmSession:
             'channel': 'release',
             'tsm_version': '',
         }
-        method = 'get'
         params['token'] = sha256('{}:{}:{}'.format(
             params['version'], params['time'], TOKEN_SALT
         ).encode()).hexdigest()
+        url = 'http://{}.tradeskillmaster.com/v2/{}'.format(
+            self.endpoint_subdomains[endpoint[0]],
+            '/'.join(endpoint)
+        )
+        return url, params
 
+    async def _req(self, endpoint, data=None):
+        url, params = self._get_url(endpoint)
         headers = {}
+        method = 'get'
         if data:
             method = 'post'
             data = json.dumps(data)
@@ -79,10 +86,7 @@ class TsmSession:
 
         r = await self.aiohttp_session.request(
             method,
-            'http://{}.tradeskillmaster.com/v2/{}'.format(
-                self.endpoint_subdomains[endpoint[0]],
-                '/'.join(endpoint)
-            ),
+            url,
             params=params,
             headers=headers,
             data=data,
@@ -107,7 +111,7 @@ class TsmSession:
             OPENID_URL,
             data=payload,
             headers=headers,
-            verify_ssl=None,
+            ssl=False,
             raise_for_status=True,
         )
         return (await resp.json())
@@ -131,6 +135,16 @@ class TsmSession:
         else:
             data = raw_data.decode()
         return data
+
+    async def addons(self):
+        status = await self.status()
+        addons = {v['name']: v for v in status['addons']}
+        for name, addon in addons.items():
+            base_url, params = self._get_url(['addon', addon['name']])
+            query_params = urllib.parse.urlencode(params)
+            url_with_params = f'{base_url}?{query_params}'
+            addon['url'] = url_with_params
+        return addons
 
 
 REALM_PRICING_SOURCES = [
@@ -345,8 +359,7 @@ class TSMResolver(BaseResolver):
                 self.tsm_config['tsm_email'],
                 self.tsm_config['tsm_password']
             )
-            status = await session.status()
-            addons = {v['name']: v for v in status['addons']}
+            addons = await session.addons()
             return addons
 
     async def _resolve_one(self, defn: Defn, metadata: None) -> PkgCandidate:
@@ -355,13 +368,14 @@ class TSMResolver(BaseResolver):
         if defn.alias not in addons:
             raise PkgNonexistent
         addon = addons[defn.alias]
+
         return PkgCandidate(
             id=defn.alias,
             slug=defn.alias,
             name=addon['name'],
             description=addon['name'],
             url='https://www.tradeskillmaster.com/',
-            download_url=self.BASE_URL.format(addon=addon['name']),
+            download_url=addon['url'],
             date_published=datetime.datetime.now(timezone.utc),
             version=addon['version_str'],
             changelog_url='data:,',
