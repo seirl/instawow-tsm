@@ -400,9 +400,8 @@ def update():
 @tsm.command()
 @click.option('-d', '--delay', default=600, type=int,
               help="Refresh delay (seconds)")
-@click.pass_obj
-def run(config_ctx, delay):
-    asyncio.run(update_tsm_appdata_loop(config_ctx.config, delay=delay))
+def run(delay):
+    asyncio.run(update_tsm_appdata_loop(delay=delay))
 
 
 @instawow.plugins.hookimpl
